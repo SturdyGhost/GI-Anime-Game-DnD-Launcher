@@ -29,6 +29,7 @@ var hash_ctx: HashingContext
 var hash_file: FileAccess
 var hash_file_length: int = 0
 var is_hashing: bool = false
+var unsafe_tls := TLSOptions.client_unsafe()
 
 func _ready():
 	exe_path = INSTALL_PATH + EXE_NAME
@@ -38,6 +39,9 @@ func _ready():
 	progress_bar.visible = true
 	play_button.disabled = true
 	retry_button.visible = false
+
+	http.set_tls_options(unsafe_tls)
+	file_downloader.set_tls_options(unsafe_tls)
 
 	ensure_install_folder_exists()
 	set_status("Checking for updates...")
