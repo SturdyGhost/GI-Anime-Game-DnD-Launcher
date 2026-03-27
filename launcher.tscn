@@ -148,6 +148,18 @@ theme_override_styles/fill = SubResource("StyleBoxFlat_rcfql")
 value = 50.0
 show_percentage = false
 
+[node name="RetryButton" type="Button" parent="Control/HBoxContainer"]
+visible = false
+custom_minimum_size = Vector2(120, 100)
+layout_mode = 2
+size_flags_horizontal = 10
+size_flags_vertical = 4
+theme_override_styles/disabled = SubResource("StyleBoxFlat_bm0ek")
+theme_override_styles/hover = SubResource("StyleBoxFlat_vcerv")
+theme_override_styles/pressed = SubResource("StyleBoxFlat_uy6ji")
+theme_override_styles/normal = SubResource("StyleBoxFlat_bm0ek")
+text = "Retry"
+
 [node name="PlayButton" type="Button" parent="Control/HBoxContainer"]
 custom_minimum_size = Vector2(200, 100)
 layout_mode = 2
@@ -164,6 +176,7 @@ text = "Play"
 [node name="FileDownloader" type="HTTPRequest" parent="."]
 use_threads = true
 
+[connection signal="pressed" from="Control/HBoxContainer/RetryButton" to="." method="_on_retry_button_pressed"]
 [connection signal="pressed" from="Control/HBoxContainer/PlayButton" to="." method="_on_play_button_pressed"]
 [connection signal="request_completed" from="HTTPRequest" to="." method="_on_http_request_request_completed"]
 [connection signal="request_completed" from="FileDownloader" to="." method="_on_file_downloader_request_completed"]

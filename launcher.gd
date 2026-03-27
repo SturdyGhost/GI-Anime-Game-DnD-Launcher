@@ -3,11 +3,13 @@ extends Node2D
 @onready var http = $HTTPRequest
 @onready var file_downloader = $FileDownloader
 @onready var play_button = $Control/HBoxContainer/PlayButton
+@onready var retry_button = $Control/HBoxContainer/RetryButton
 @onready var progress_bar = $Control/HBoxContainer/VBoxContainer/ProgressBar
 @onready var status_label = $Control/HBoxContainer/VBoxContainer/StatusLabel
 
 const GITHUB_API_URL = "https://api.github.com/repos/SturdyGhost/GI-Anime-Game-DnD-Client/releases/latest"
 const EXE_NAME = "Genshin DnD Client.exe"
+const AUTO_LAUNCH_DELAY = 2.0  # seconds before auto-launching when up to date
 
 # Progress phases — each phase owns a slice of the bar
 const PHASE_CHECK = 0.0       # 0-10%: fetching release info
@@ -35,6 +37,7 @@ func _ready():
 	progress_bar.max_value = 100
 	progress_bar.visible = true
 	play_button.disabled = true
+	retry_button.visible = false
 
 	ensure_install_folder_exists()
 	set_status("Checking for updates...")
@@ -51,6 +54,11 @@ func set_status(text: String):
 
 func set_progress(value: float):
 	progress_bar.value = value
+
+func show_error(message: String):
+	set_status(message)
+	retry_button.visible = true
+	play_button.disabled = true
 
 func ensure_install_folder_exists():
 	if not DirAccess.dir_exists_absolute(INSTALL_PATH):
@@ -85,30 +93,26 @@ func fetch_latest_release():
 
 func _on_http_request_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
 	if result != HTTPRequest.RESULT_SUCCESS:
-		set_status("Connection failed — check your internet")
+		show_error("Connection failed — check your internet")
 		print("HTTP request failed with result: ", result)
 		return
+
 	# 304 = nothing changed since last check, doesn't count against rate limit
 	if response_code == 304:
 		print("GitHub returned 304 — no new release since last check.")
 		if FileAccess.file_exists(exe_path):
-			set_status("Game is up to date!")
-			set_progress(PHASE_DONE)
-			play_button.disabled = false
-			fade_out_progress_bar()
+			game_ready()
 		else:
 			set_status("Game files missing — re-downloading...")
-			# Clear etag so next launch does a full check
 			save_etag("")
-			# We don't have release info from a 304, so fetch again without etag
 			http.request(GITHUB_API_URL, ["Accept: application/vnd.github+json"])
 		return
 
 	if response_code != 200:
 		if response_code == 403:
-			set_status("Rate limited by GitHub — try again later")
+			show_error("Rate limited by GitHub — try again later")
 		else:
-			set_status("Failed to check for updates (HTTP %d)" % response_code)
+			show_error("Failed to check for updates (HTTP %d)" % response_code)
 		print("Failed to fetch release info: ", response_code)
 		return
 
@@ -120,7 +124,7 @@ func _on_http_request_request_completed(result: int, response_code: int, headers
 
 	var json = JSON.parse_string(body.get_string_from_utf8())
 	if not json or not json.has("assets") or json["assets"].size() == 0:
-		set_status("No release found")
+		show_error("No release found")
 		return
 
 	var asset = json["assets"][0]
@@ -160,7 +164,6 @@ func process_hash_chunk():
 		finish_hash()
 		return
 
-	# Process several MB per frame to keep it fast but not freeze
 	var bytes_per_frame = 4 * 1048576  # 4 MB
 	var bytes_read = 0
 	while bytes_read < bytes_per_frame and hash_file.get_position() < hash_file_length:
@@ -168,12 +171,9 @@ func process_hash_chunk():
 		hash_ctx.update(chunk)
 		bytes_read += chunk.size()
 
-	# Update progress within the verify phase (10-20%)
 	var ratio = float(hash_file.get_position()) / float(hash_file_length)
 	set_progress(PHASE_VERIFY + ratio * (PHASE_DOWNLOAD - PHASE_VERIFY))
-
-	var pct = int(ratio * 100)
-	set_status("Verifying local files... %d%%" % pct)
+	set_status("Verifying local files... %d%%" % int(ratio * 100))
 
 func finish_hash():
 	is_hashing = false
@@ -189,20 +189,35 @@ func on_hash_complete(local_hash: String):
 	print("Remote SHA256: ", remote_digest)
 
 	if local_hash != "" and local_hash == remote_digest:
-		set_status("Game is up to date!")
-		set_progress(PHASE_DONE)
-		play_button.disabled = false
-		fade_out_progress_bar()
+		game_ready()
 	else:
 		set_status("Update available — downloading...")
 		set_progress(PHASE_DOWNLOAD)
 		download_game_client()
 
+# --- Up to date — auto-launch ---
+
+func game_ready():
+	set_status("Game is up to date!")
+	set_progress(PHASE_DONE)
+	play_button.disabled = false
+	fade_out_progress_bar()
+	auto_launch()
+
+func auto_launch():
+	if not FileAccess.file_exists(exe_path):
+		return
+	# Countdown so the user can see it's about to launch
+	for i in range(int(AUTO_LAUNCH_DELAY), 0, -1):
+		set_status("Launching in %d..." % i)
+		await get_tree().create_timer(1.0).timeout
+	launch_game()
+
 # --- Download ---
 
 func download_game_client():
 	if download_url == "":
-		set_status("Error: no download URL")
+		show_error("Error: no download URL")
 		return
 	file_downloader.request(download_url)
 
@@ -212,18 +227,15 @@ func update_download_progress():
 	if total <= 0:
 		return
 	var ratio = float(downloaded) / float(total)
-	# Map to the download phase (20-95%)
 	set_progress(PHASE_DOWNLOAD + ratio * (95.0 - PHASE_DOWNLOAD))
-
 	var mb_done = downloaded / 1048576.0
 	var mb_total = total / 1048576.0
 	set_status("Downloading... %.0f / %.0f MB" % [mb_done, mb_total])
 
 func _on_file_downloader_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
 	if result != HTTPRequest.RESULT_SUCCESS:
-		set_status("Download failed — check your internet")
+		show_error("Download failed — check your internet")
 		print("Download request failed with result: ", result)
-		play_button.disabled = false
 		return
 
 	# GitHub redirects release assets — follow 302s
@@ -234,12 +246,11 @@ func _on_file_downloader_request_completed(result: int, response_code: int, head
 				print("Following redirect...")
 				file_downloader.request(redirect_url)
 				return
-		set_status("Download error: redirect failed")
+		show_error("Download error: redirect failed")
 		return
 
 	if response_code != 200:
-		set_status("Download failed (error %d)" % response_code)
-		play_button.disabled = false
+		show_error("Download failed (error %d)" % response_code)
 		return
 
 	set_status("Installing...")
@@ -261,31 +272,47 @@ func _on_file_downloader_request_completed(result: int, response_code: int, head
 		print("Saved new client to: ", exe_path)
 		set_status("Update complete!")
 	else:
-		set_status("Error: failed to save file")
+		show_error("Error: failed to save file")
 		print("Failed to write client exe.")
+		return
 
 	set_progress(PHASE_DONE)
 	play_button.disabled = false
 	fade_out_progress_bar()
+	auto_launch()
+
+# --- UI ---
 
 func fade_out_progress_bar():
 	var tween = create_tween()
-	tween.tween_interval(1.5)
+	tween.tween_interval(0.5)
 	tween.tween_property(progress_bar, "modulate:a", 0.0, 0.8)
 	tween.tween_property(status_label, "modulate:a", 0.0, 0.8)
 	tween.tween_callback(func():
 		progress_bar.visible = false
-		status_label.visible = false
 	)
 
-func _on_play_button_pressed() -> void:
+func launch_game():
 	if not FileAccess.file_exists(exe_path):
 		set_status("Game not found — restart launcher")
 		return
 	var success = OS.create_process(exe_path, [])
 	if success:
 		set_status("Launching...")
-		await get_tree().create_timer(2.0).timeout
+		await get_tree().create_timer(1.0).timeout
 		get_tree().quit()
 	else:
 		set_status("Failed to launch game")
+
+func _on_play_button_pressed() -> void:
+	launch_game()
+
+func _on_retry_button_pressed() -> void:
+	retry_button.visible = false
+	progress_bar.value = 0
+	progress_bar.modulate.a = 1.0
+	progress_bar.visible = true
+	status_label.modulate.a = 1.0
+	status_label.visible = true
+	set_status("Retrying...")
+	fetch_latest_release()
