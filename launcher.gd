@@ -17,8 +17,10 @@ const PHASE_DONE = 100.0
 
 var INSTALL_PATH = OS.get_system_dir(OS.SYSTEM_DIR_DOCUMENTS) + "/Genshin_DnD_Client/"
 var exe_path: String
+var etag_path: String
 var download_url: String
 var remote_digest: String
+var saved_etag: String = ""
 
 # Hashing state — spread across frames so UI doesn't freeze
 var hash_ctx: HashingContext
@@ -28,6 +30,7 @@ var is_hashing: bool = false
 
 func _ready():
 	exe_path = INSTALL_PATH + EXE_NAME
+	etag_path = INSTALL_PATH + "etag.txt"
 	progress_bar.value = 0
 	progress_bar.max_value = 100
 	progress_bar.visible = true
@@ -57,19 +60,63 @@ func ensure_install_folder_exists():
 		else:
 			print("Created install folder at: ", INSTALL_PATH)
 
+func load_etag() -> String:
+	if FileAccess.file_exists(etag_path):
+		var f = FileAccess.open(etag_path, FileAccess.READ)
+		if f:
+			var tag = f.get_as_text().strip_edges()
+			f.close()
+			return tag
+	return ""
+
+func save_etag(etag: String):
+	var f = FileAccess.open(etag_path, FileAccess.WRITE)
+	if f:
+		f.store_string(etag)
+		f.close()
+
 func fetch_latest_release():
 	set_progress(PHASE_CHECK)
-	http.request(GITHUB_API_URL, ["Accept: application/vnd.github+json"])
+	saved_etag = load_etag()
+	var request_headers = ["Accept: application/vnd.github+json"]
+	if saved_etag != "":
+		request_headers.append("If-None-Match: %s" % saved_etag)
+	http.request(GITHUB_API_URL, request_headers)
 
 func _on_http_request_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
 	if result != HTTPRequest.RESULT_SUCCESS:
 		set_status("Connection failed — check your internet")
 		print("HTTP request failed with result: ", result)
 		return
+	# 304 = nothing changed since last check, doesn't count against rate limit
+	if response_code == 304:
+		print("GitHub returned 304 — no new release since last check.")
+		if FileAccess.file_exists(exe_path):
+			set_status("Game is up to date!")
+			set_progress(PHASE_DONE)
+			play_button.disabled = false
+			fade_out_progress_bar()
+		else:
+			set_status("Game files missing — re-downloading...")
+			# Clear etag so next launch does a full check
+			save_etag("")
+			# We don't have release info from a 304, so fetch again without etag
+			http.request(GITHUB_API_URL, ["Accept: application/vnd.github+json"])
+		return
+
 	if response_code != 200:
-		set_status("Failed to check for updates (HTTP %d)" % response_code)
+		if response_code == 403:
+			set_status("Rate limited by GitHub — try again later")
+		else:
+			set_status("Failed to check for updates (HTTP %d)" % response_code)
 		print("Failed to fetch release info: ", response_code)
 		return
+
+	# Save the ETag so future checks can use conditional requests
+	for header in headers:
+		if header.to_lower().begins_with("etag:"):
+			save_etag(header.substr(header.find(":") + 1).strip_edges())
+			break
 
 	var json = JSON.parse_string(body.get_string_from_utf8())
 	if not json or not json.has("assets") or json["assets"].size() == 0:
