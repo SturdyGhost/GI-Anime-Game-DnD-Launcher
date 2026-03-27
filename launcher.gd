@@ -62,8 +62,12 @@ func fetch_latest_release():
 	http.request(GITHUB_API_URL, ["Accept: application/vnd.github+json"])
 
 func _on_http_request_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
+	if result != HTTPRequest.RESULT_SUCCESS:
+		set_status("Connection failed — check your internet")
+		print("HTTP request failed with result: ", result)
+		return
 	if response_code != 200:
-		set_status("Failed to check for updates (error %d)" % response_code)
+		set_status("Failed to check for updates (HTTP %d)" % response_code)
 		print("Failed to fetch release info: ", response_code)
 		return
 
@@ -169,6 +173,12 @@ func update_download_progress():
 	set_status("Downloading... %.0f / %.0f MB" % [mb_done, mb_total])
 
 func _on_file_downloader_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray) -> void:
+	if result != HTTPRequest.RESULT_SUCCESS:
+		set_status("Download failed — check your internet")
+		print("Download request failed with result: ", result)
+		play_button.disabled = false
+		return
+
 	# GitHub redirects release assets — follow 302s
 	if response_code == 302 or response_code == 301:
 		for header in headers:
