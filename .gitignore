@@ -1,3 +1,14 @@
 # Godot 4+ specific ignores
 .godot/
 /android/
+
+# Large files: kept on the E: backup only
+# (stale double-suffix export artifact from console wrapper setting)
+Genshin DnD Launcher.console.console.exe
+
+# Standard additions (git sweep 2026-11-17)
+.env*
+*.log
+.venv/
+__pycache__/
+*.pck
